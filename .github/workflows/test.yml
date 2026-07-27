@@ -1,0 +1,104 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (${{ matrix.python }} · ubuntu)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # The MLX packages are marked for darwin/arm64 in requirements.txt, so this
+      # installs the API, format and job layers only — exactly what runs here.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Test
+        run: python -m pytest --cov=backend --cov-report=term-missing
+
+  macos:
+    name: macos (Apple Silicon, full MLX stack)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+
+      - name: Verify MLX can reach Metal
+        run: |
+          python - <<'PY'
+          import mlx.core as mx
+          import mlx_whisper
+          value = float((mx.ones((128, 128)) @ mx.ones((128, 128)))[0, 0])
+          assert value == 128.0, value
+          print(f"mlx {getattr(mx, '__version__', '?')} on {mx.default_device()}")
+          print(f"mlx-whisper {getattr(mlx_whisper, '__version__', '?')}")
+          PY
+
+      # No model weights are downloaded: the suite drives a StubEngine, so CI
+      # never pulls 3 GB from Hugging Face.
+      - name: Test
+        run: python -m pytest
+
+      - name: Build the macOS app
+        run: ./scripts/build.sh
+
+      - name: Check the bundle is well formed
+        run: |
+          test -x build/WhisperMac.app/Contents/MacOS/WhisperMac
+          test -f build/WhisperMac.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' build/WhisperMac.app/Contents/Info.plist
+          codesign --verify --verbose build/WhisperMac.app
+
+  scripts:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+      - name: Check shell scripts
+        run: shellcheck --severity=warning --external-sources run.sh scripts/*.sh

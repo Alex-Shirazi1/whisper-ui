@@ -1,0 +1,36 @@
+[project]
+name = "whisper-mac-backend"
+version = "1.0.0"
+description = "Local Whisper transcription backend for the WhisperMac macOS app"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "unit: fast, no external tools",
+    "integration: touches ffmpeg or the filesystem",
+    "mlx: requires MLX and downloaded model weights (skipped by default)",
+]
+filterwarnings = ["ignore::DeprecationWarning:multipart.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "backend/models", "app/.build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RET"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # FastAPI's Depends()/File() defaults are the documented idiom
+    "SIM108", # ternaries are not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["B011", "SIM117"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

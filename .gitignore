@@ -1,0 +1,46 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Whisper model weights (multi-GB, fetched by scripts/install.sh) ----
+backend/models/*
+!backend/models/.gitkeep
+!backend/models/README.md
+
+# ---- Generated transcripts ----
+output/*
+!output/.gitkeep
+!output/README.md
+
+# ---- Logs & runtime state ----
+logs/
+*.log
+.whisper-mac/
+backend/.tmp/
+
+# ---- Swift / Xcode ----
+app/.build/
+app/.swiftpm/
+build/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# ---- macOS ----
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# ---- Editors ----
+.idea/
+.vscode/
+*.swp

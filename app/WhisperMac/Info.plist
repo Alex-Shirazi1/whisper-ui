@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template consumed by scripts/build.sh, which substitutes __WM_REPO_ROOT__ with
+  the absolute path of this checkout so the app can start its own backend.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>WhisperMac</string>
+	<key>CFBundleDisplayName</key>
+	<string>WhisperMac</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.whispermac.app</string>
+	<key>CFBundleExecutable</key>
+	<string>WhisperMac</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT Licensed. Transcription runs entirely on this Mac.</string>
+
+	<!-- The backend is loopback-only; ATS still needs to be told that plain
+	     HTTP to 127.0.0.1 is intentional. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<!-- Absolute path to this repository, stamped at build time. -->
+	<key>WMRepoRoot</key>
+	<string>__WM_REPO_ROOT__</string>
+
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio or Video</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>public.movie</string>
+				<string>public.mpeg-4</string>
+				<string>com.apple.quicktime-movie</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
