@@ -14,13 +14,18 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from backend import transcriber
 from backend.config import Settings
 from backend.transcriber import (
+    MLXEngine,
+    ModelUnavailableError,
     TranscribeOptions,
+    TranscribeResult,
     TranscriptionCancelled,
     _progress_bridge,
     _supported_kwargs,
     _transcribe_module,
+    resolve_route,
 )
 
 pytestmark = pytest.mark.unit
@@ -221,6 +226,136 @@ class TestAgainstRealMlxWhisper:
     def test_model_holder_is_where_we_think_it_is(self) -> None:
         # backend.transcriber.model_is_loaded reads this to report "weights hot".
         assert hasattr(_transcribe_module(), "ModelHolder")
+
+
+PARAKEET = "mlx-community/parakeet-tdt-0.6b-v3"
+WHISPER = "mlx-community/whisper-large-v3-mlx"
+
+
+def _options(**overrides: object) -> TranscribeOptions:
+    return replace(TranscribeOptions(model=PARAKEET), **overrides)
+
+
+def _never_detect() -> str | None:
+    raise AssertionError("language detection should not run")
+
+
+class TestResolveRoute:
+    """Which model handles a job when Parakeet is the default."""
+
+    def test_a_parakeet_language_stays_on_parakeet(self) -> None:
+        routed = resolve_route(_options(language="en"), fallback_model=WHISPER, detect=_never_detect)
+        assert (routed.model, routed.language) == (PARAKEET, "en")
+
+    def test_translation_goes_to_whisper(self) -> None:
+        routed = resolve_route(
+            _options(language="es", task="translate"), fallback_model=WHISPER, detect=_never_detect
+        )
+        assert (routed.model, routed.task, routed.language) == (WHISPER, "translate", "es")
+
+    def test_a_language_parakeet_lacks_goes_to_whisper(self) -> None:
+        routed = resolve_route(_options(language="fa"), fallback_model=WHISPER, detect=_never_detect)
+        assert (routed.model, routed.language) == (WHISPER, "fa")
+
+    def test_auto_detects_and_keeps_parakeet_for_its_languages(self) -> None:
+        routed = resolve_route(_options(), fallback_model=WHISPER, detect=lambda: "de")
+        assert (routed.model, routed.language) == (PARAKEET, "de")
+
+    def test_auto_detects_and_hands_other_languages_to_whisper(self) -> None:
+        routed = resolve_route(_options(), fallback_model=WHISPER, detect=lambda: "ja")
+        assert (routed.model, routed.language) == (WHISPER, "ja")
+
+    def test_auto_translate_lets_whisper_detect(self) -> None:
+        routed = resolve_route(
+            _options(task="translate"), fallback_model=WHISPER, detect=_never_detect
+        )
+        assert (routed.model, routed.language) == (WHISPER, None)
+
+    def test_whisper_models_are_never_rerouted(self) -> None:
+        options = replace(TranscribeOptions(model=WHISPER), language="ja", task="translate")
+        assert resolve_route(options, fallback_model=None, detect=_never_detect) == options
+
+    def test_without_a_fallback_auto_stays_on_parakeet(self) -> None:
+        routed = resolve_route(_options(), fallback_model=None, detect=_never_detect)
+        assert (routed.model, routed.language) == (PARAKEET, None)
+
+    @pytest.mark.parametrize("overrides", [{"task": "translate"}, {"language": "zh"}])
+    def test_without_a_fallback_unsupported_jobs_fail_clearly(self, overrides: dict) -> None:
+        with pytest.raises(ModelUnavailableError, match="WHISPER_MAC_FALLBACK_MODEL"):
+            resolve_route(_options(**overrides), fallback_model=None, detect=_never_detect)
+
+
+class TestMLXEngineRouting:
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, TranscribeOptions]]:
+        recorded: list[tuple[str, TranscribeOptions]] = []
+
+        def fake(name: str):
+            def run(samples, options, **_kwargs) -> TranscribeResult:
+                recorded.append((name, options))
+                return TranscribeResult(raw={}, language=options.language, model=options.model)
+
+            return run
+
+        monkeypatch.setattr(transcriber, "transcribe", fake("whisper"))
+        monkeypatch.setattr(transcriber, "transcribe_parakeet", fake("parakeet"))
+        monkeypatch.setattr(transcriber, "detect_language", lambda samples, model: "ko")
+        return recorded
+
+    def test_runs_the_routed_engine(self, calls: list) -> None:
+        engine = MLXEngine(fallback_model=WHISPER)
+        samples = np.zeros(16_000, dtype=np.float32)
+
+        english = engine.transcribe(samples, _options(language="en"))
+        korean = engine.transcribe(samples, _options())
+
+        assert [name for name, _ in calls] == ["parakeet", "whisper"]
+        assert (english.model, korean.model, korean.language) == (PARAKEET, WHISPER, "ko")
+
+    def test_the_fallback_counts_as_part_of_a_parakeet_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        on_disk = {PARAKEET}
+        downloaded: list[str] = []
+        monkeypatch.setattr(transcriber, "model_is_local", lambda model: model in on_disk)
+        monkeypatch.setattr(transcriber, "ensure_model", downloaded.append)
+        engine = MLXEngine(fallback_model=WHISPER)
+
+        assert not engine.model_is_local(PARAKEET)
+        engine.ensure_model(PARAKEET)
+        assert downloaded == [PARAKEET, WHISPER]
+        assert MLXEngine().model_is_local(PARAKEET)
+
+
+class TestTranscribeParakeet:
+    def test_wraps_tokens_in_the_whisper_result_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.tests.test_parakeet import tok
+
+        monkeypatch.setattr(
+            transcriber.parakeet, "run", lambda samples, model, **_: [tok(" Hi.", 0.0, 0.4)]
+        )
+        progress: list[float] = []
+
+        result = transcriber.transcribe_parakeet(
+            np.zeros(16_000, dtype=np.float32), _options(language="en"), on_progress=progress.append
+        )
+
+        assert (result.model, result.language) == (PARAKEET, "en")
+        assert result.raw["segments"][0]["text"] == " Hi."
+        assert progress[-1] == 1.0
+
+    def test_cancellation_surfaces_as_transcription_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def run(samples, model, *, check_cancel, **_):
+            check_cancel()
+            return []
+
+        monkeypatch.setattr(transcriber.parakeet, "run", run)
+        with pytest.raises(TranscriptionCancelled):
+            transcriber.transcribe_parakeet(
+                np.zeros(16_000, dtype=np.float32), _options(), should_cancel=lambda: True
+            )
 
 
 def test_samples_contract_is_float32_mono() -> None:

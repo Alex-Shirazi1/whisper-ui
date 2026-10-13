@@ -1,8 +1,14 @@
-"""MLX Whisper engine wrapper: inference, live progress, cancellation.
+"""MLX speech engines: inference, live progress, cancellation, routing.
 
-Everything Apple-Silicon-specific lives here. mlx-whisper runs the encoder and
-decoder as Metal kernels in float16 — there is no PyTorch, ONNX or CPU fallback
-path in this project, by design.
+Everything Apple-Silicon-specific lives here. Both engines run as Metal kernels
+through MLX — there is no PyTorch, ONNX or CPU fallback path in this project, by
+design.
+
+The default model is NVIDIA Parakeet (:mod:`backend.parakeet`): faster and more
+accurate on English than whisper-large-v3, but limited to 25 European languages
+and unable to translate. :class:`MLXEngine` routes each job: Parakeet when it
+can do the job, otherwise the Whisper fallback model — for translation, for a
+language Parakeet lacks, and to identify the language when none was chosen.
 
 Two things mlx-whisper does not offer out of the box are progress reporting and
 cancellation. Both are obtained by swapping the ``tqdm`` module it uses for a
@@ -19,12 +25,13 @@ import inspect
 import threading
 import types
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
 
+from . import parakeet
 from .config import Settings
 from .logging_setup import LoggerWriter, get_logger
 
@@ -266,6 +273,7 @@ def engine_status() -> EngineStatus:
     try:
         import mlx.core as mx  # noqa: PLC0415 - deliberately lazy
         import mlx_whisper  # noqa: PLC0415
+        import parakeet_mlx  # noqa: F401, PLC0415
     except Exception as exc:  # pragma: no cover - depends on host
         return EngineStatus(available=False, error=f"{type(exc).__name__}: {exc}")
 
@@ -332,7 +340,7 @@ def ensure_model(model: str) -> str:
         snapshot_download(repo_id=model)
     except Exception as exc:
         raise ModelUnavailableError(
-            f"Could not download the Whisper model '{model}'.\n"
+            f"Could not download the speech model '{model}'.\n"
             f"Details: {type(exc).__name__}: {exc}\n"
             "Check your internet connection, then retry. Once downloaded the "
             "model is cached in backend/models and never fetched again."
@@ -400,6 +408,122 @@ def transcribe(
     )
 
 
+def detect_language(samples: np.ndarray, model: str) -> str | None:
+    """Whisper's language identification over the first 30 seconds.
+
+    The same check ``mlx_whisper.transcribe`` runs when no language is given,
+    without the decode that follows it.
+    """
+    require_engine()
+
+    import mlx.core as mx  # noqa: PLC0415
+    from mlx_whisper.audio import (  # noqa: PLC0415
+        N_FRAMES,
+        N_SAMPLES,
+        log_mel_spectrogram,
+        pad_or_trim,
+    )
+    from mlx_whisper.transcribe import ModelHolder  # noqa: PLC0415
+
+    with _INFERENCE_LOCK:
+        whisper = ModelHolder.get_model(model, mx.float16)
+        mel = log_mel_spectrogram(samples[:N_SAMPLES], n_mels=whisper.dims.n_mels, padding=N_SAMPLES)
+        _, probs = whisper.detect_language(pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16))
+
+    if not probs:
+        return None
+    language = max(probs, key=probs.get)
+    log.info("Detected language: %s (p=%.2f)", language, probs[language])
+    return language
+
+
+def transcribe_parakeet(
+    samples: np.ndarray,
+    options: TranscribeOptions,
+    *,
+    on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+    on_inference_start: Callable[[], None] | None = None,
+) -> TranscribeResult:
+    """Run Parakeet over ``samples``; same contract as :func:`transcribe`.
+
+    ``options.language`` is recorded on the result, not passed to the model:
+    Parakeet has no language control.
+    """
+
+    def check_cancel() -> None:
+        if should_cancel is not None and should_cancel():
+            raise TranscriptionCancelled("Transcription cancelled.")
+
+    with _INFERENCE_LOCK:
+        check_cancel()
+        try:
+            tokens = parakeet.run(
+                samples,
+                options.model,
+                on_progress=on_progress,
+                check_cancel=check_cancel,
+                on_start=on_inference_start,
+            )
+        except ImportError as exc:  # pragma: no cover - depends on host
+            raise EngineUnavailableError(
+                f"The Parakeet engine is not installed ({exc}).\n"
+                "Run ./scripts/install.sh to repair the Python environment."
+            ) from exc
+
+    if on_progress is not None:
+        on_progress(1.0)
+
+    return TranscribeResult(
+        raw=parakeet.to_raw(tokens, language=options.language),
+        language=options.language,
+        model=options.model,
+        options=options,
+    )
+
+
+def resolve_route(
+    options: TranscribeOptions,
+    *,
+    fallback_model: str | None,
+    detect: Callable[[], str | None],
+) -> TranscribeOptions:
+    """Decide which model actually runs a job, and in which language.
+
+    Whisper models run as asked. For a Parakeet model the job moves to
+    ``fallback_model`` when Parakeet cannot do it: translation, or a language
+    outside :data:`parakeet.LANGUAGES` — chosen by the user, or found by
+    ``detect`` when the language is left on auto. Without a fallback, auto
+    stays on Parakeet and its 25 languages.
+    """
+    if not parakeet.is_parakeet_model(options.model):
+        return options
+
+    language = options.language
+    if options.task == "transcribe" and language is not None and language in parakeet.LANGUAGES:
+        return options
+
+    if not fallback_model:
+        if options.task == "translate":
+            raise ModelUnavailableError(
+                "Translation needs a Whisper model, and WHISPER_MAC_FALLBACK_MODEL is not set."
+            )
+        if language is not None:
+            raise ModelUnavailableError(
+                f"Parakeet cannot transcribe '{language}', and WHISPER_MAC_FALLBACK_MODEL "
+                "is not set. Set it to a Whisper model to handle other languages."
+            )
+        return options
+
+    if options.task == "translate" or language is not None:
+        return replace(options, model=fallback_model)
+
+    detected = detect()
+    if detected is not None and detected not in parakeet.LANGUAGES:
+        return replace(options, model=fallback_model, language=detected)
+    return replace(options, language=detected)
+
+
 # --------------------------------------------------------------------------
 # Engine seam
 # --------------------------------------------------------------------------
@@ -431,16 +555,33 @@ class Engine(Protocol):
 
 
 class MLXEngine:
-    """The real engine: mlx-whisper on Metal."""
+    """The real engine: Parakeet or mlx-whisper on Metal, routed per job.
+
+    ``fallback_model`` is the Whisper model behind a Parakeet default (see
+    :func:`resolve_route`). It is treated as part of the model: it is
+    downloaded alongside it and must be on disk for the model to count as local.
+    """
+
+    def __init__(self, fallback_model: str | None = None) -> None:
+        self._fallback_model = fallback_model or None
+
+    def _required(self, model: str) -> list[str]:
+        if parakeet.is_parakeet_model(model) and self._fallback_model:
+            return [model, self._fallback_model]
+        return [model]
 
     def model_is_local(self, model: str) -> bool:
-        return model_is_local(model)
+        return all(model_is_local(required) for required in self._required(model))
 
     def model_is_loaded(self, model: str) -> bool:
+        if parakeet.is_parakeet_model(model):
+            return parakeet.model_is_loaded(model)
         return model_is_loaded(model)
 
     def ensure_model(self, model: str) -> str:
-        return ensure_model(model)
+        for required in self._required(model):
+            ensure_model(required)
+        return model
 
     def transcribe(
         self,
@@ -451,9 +592,20 @@ class MLXEngine:
         should_cancel: CancelCheck | None = None,
         on_inference_start: Callable[[], None] | None = None,
     ) -> TranscribeResult:
-        return transcribe(
-            samples,
+        fallback = self._fallback_model
+        routed = resolve_route(
             options,
+            fallback_model=fallback,
+            detect=lambda: detect_language(samples, fallback) if fallback else None,
+        )
+        if routed.model != options.model:
+            log.info(
+                "Routing to %s (task=%s, language=%s)", routed.model, routed.task, routed.language
+            )
+        run = transcribe_parakeet if parakeet.is_parakeet_model(routed.model) else transcribe
+        return run(
+            samples,
+            routed,
             on_progress=on_progress,
             should_cancel=should_cancel,
             on_inference_start=on_inference_start,

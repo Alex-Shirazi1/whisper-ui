@@ -63,8 +63,8 @@ STAGE_MESSAGES: Mapping[JobStage, str] = {
     JobStage.QUEUED: "Waiting in queue…",
     JobStage.INSPECTING: "Reading file…",
     JobStage.EXTRACTING_AUDIO: "Extracting audio…",
-    JobStage.DOWNLOADING_MODEL: "Downloading Whisper model (one time only)…",
-    JobStage.LOADING_MODEL: "Loading Whisper model…",
+    JobStage.DOWNLOADING_MODEL: "Downloading speech model (one time only)…",
+    JobStage.LOADING_MODEL: "Loading speech model…",
     JobStage.TRANSCRIBING: "Transcribing…",
     JobStage.WRITING_OUTPUT: "Writing transcript…",
     JobStage.COMPLETED: "Finished",
@@ -257,7 +257,7 @@ class JobStore:
         max_workers: int = 1,
     ) -> None:
         self._settings = settings
-        self._engine: Engine = engine or MLXEngine()
+        self._engine: Engine = engine or MLXEngine(settings.fallback_model)
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
@@ -449,7 +449,7 @@ class JobStore:
 
         job.set_stage(
             JobStage.LOADING_MODEL,
-            message="Whisper model ready…" if self._engine.model_is_loaded(model) else None,
+            message="Speech model ready…" if self._engine.model_is_loaded(model) else None,
         )
 
         options = TranscribeOptions.from_settings(

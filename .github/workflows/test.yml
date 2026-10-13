@@ -70,6 +70,7 @@ jobs:
           python - <<'PY'
           import mlx.core as mx
           import mlx_whisper
+          import parakeet_mlx
           value = float((mx.ones((128, 128)) @ mx.ones((128, 128)))[0, 0])
           assert value == 128.0, value
           print(f"mlx {getattr(mx, '__version__', '?')} on {mx.default_device()}")

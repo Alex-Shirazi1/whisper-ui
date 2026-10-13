@@ -80,6 +80,7 @@ import sys
 try:
     import mlx.core as mx
     import mlx_whisper
+    import parakeet_mlx  # noqa: F401
 except Exception as exc:  # noqa: BLE001
     print(f"import failed: {type(exc).__name__}: {exc}")
     sys.exit(1)

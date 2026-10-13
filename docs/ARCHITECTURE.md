@@ -4,7 +4,7 @@ WhisperMac is two processes that talk over loopback HTTP:
 
 ```
 ┌──────────────────────────────┐        ┌────────────────────────────────────┐
-│  WhisperMac.app (SwiftUI)    │        │  backend (FastAPI + mlx-whisper)   │
+│  WhisperMac.app (SwiftUI)    │        │  backend (FastAPI + MLX engines)   │
 │                              │        │                                    │
 │  ContentView                 │        │  whisper_server.py   routes        │
 │   ├─ HeaderBar               │  HTTP  │  jobs.py             pipeline      │
@@ -39,13 +39,25 @@ invisible in normal use.
    | `extracting_audio`  | 0.02 – 0.10 | `ffmpeg` → 16 kHz mono PCM, real progress from `-progress` |
    | `downloading_model` | 0.10 – 0.13 | first run only; indeterminate |
    | `loading_model`     | 0.13 – 0.17 | weights into unified memory; indeterminate |
-   | `transcribing`      | 0.17 – 0.97 | MLX decode, one report per 30 s window |
+   | `transcribing`      | 0.17 – 0.97 | MLX decode; one report per 2 min chunk (Parakeet) or 30 s window (Whisper) |
    | `writing_output`    | 0.97 – 1.00 | render and write every requested format |
 
 5. The app polls `GET /jobs` twice a second while anything is running, and
    `GET /jobs/{id}/transcript` once a file finishes.
 
 ## Design decisions worth knowing
+
+**Parakeet by default, Whisper behind it.** The default model is NVIDIA
+Parakeet TDT 0.6B v3 (`backend/parakeet.py`, via `parakeet-mlx`): far faster
+than whisper-large-v3 and more accurate on English, but it covers 25 European
+languages and cannot translate or detect a language. `transcriber.resolve_route`
+keeps a job on Parakeet when it can do it and otherwise hands it to the
+fallback Whisper model: translation, a language Parakeet lacks, or — with the
+language on auto — whatever Whisper's own language ID on the first 30 seconds
+says is not a Parakeet language. Parakeet decodes in 2-minute chunks with 15 s
+of overlap; each boundary is a progress report and a cancellation check, and
+its sub-word tokens are regrouped into Whisper-shaped words and caption-sized
+segments so the writers and the app never know which engine ran.
 
 **Progress and cancellation come from a `tqdm` shim.** mlx-whisper offers
 neither. It calls `tqdm.tqdm(total=content_frames)` and `pbar.update(...)` once
@@ -102,7 +114,8 @@ The seams already exist; none of these require reshaping the pipeline.
 | `backend/config.py` | Frozen `Settings`, env overrides, HF cache location | ~230 |
 | `backend/media.py` | ffmpeg/ffprobe discovery, probing, extraction, WAV → float32 | ~300 |
 | `backend/formats.py` | `Transcript`/`Segment`/`Word`, four renderers, file naming | ~360 |
-| `backend/transcriber.py` | MLX engine, progress bridge, model cache, `Engine` protocol | ~390 |
+| `backend/transcriber.py` | MLX engines, routing, progress bridge, model cache, `Engine` protocol | ~650 |
+| `backend/parakeet.py` | Parakeet adapter: chunked decode, tokens → words → segments | ~260 |
 | `backend/jobs.py` | Stages, progress mapping, cancellation, cleanup | ~460 |
 | `backend/whisper_server.py` | FastAPI routes, uploads, validation | ~430 |
 | `backend/auth.py` | Session token and handshake file | ~100 |

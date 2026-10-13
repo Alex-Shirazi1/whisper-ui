@@ -5,9 +5,10 @@
 </p>
 
 <p align="center">
-  A native macOS app for OpenAI Whisper, running <code>whisper-large-v3</code> on
-  Apple Silicon through <a href="https://github.com/ml-explore/mlx">MLX</a> —
-  Metal GPU acceleration, no cloud, no API keys, no terminal.
+  A native macOS transcription app running NVIDIA <code>parakeet-tdt-0.6b-v3</code>,
+  with OpenAI <code>whisper-large-v3</code> behind it, on Apple Silicon through
+  <a href="https://github.com/ml-explore/mlx">MLX</a> — Metal GPU acceleration, no
+  cloud, no API keys, no terminal.
 </p>
 
 <p align="center">
@@ -20,9 +21,9 @@
 
 ## Why this exists
 
-Whisper is excellent and `mlx_whisper` makes it fast on Apple Silicon — but using
-it means remembering a command, a model id, a flag for every output format, and
-where you left the file. WhisperMac is that command turned into an app you can
+Local speech recognition is excellent and MLX makes it fast on Apple Silicon —
+but using it means remembering a command, a model id, a flag for every output
+format, and where you left the file. WhisperMac is that command turned into an app you can
 keep in your Dock:
 
 - **Drag and drop** a video or audio file onto the window. That's the whole flow.
@@ -63,8 +64,8 @@ keep in your Dock:
 |---|---|
 | Mac | Apple Silicon (M1 or newer). MLX has no Intel build. |
 | macOS | 14 Sonoma or newer |
-| Disk | ~3 GB for `whisper-large-v3` weights, ~1.5 GB for the Python environment |
-| Memory | 16 GB comfortably runs `large-v3`; on 8 GB use `--model mlx-community/whisper-medium-mlx` |
+| Disk | ~5.5 GB of weights (2.5 GB Parakeet + 3 GB Whisper), ~1.5 GB for the Python environment |
+| Memory | 16 GB comfortably runs both models; on 8 GB set `WHISPER_MAC_FALLBACK_MODEL=mlx-community/whisper-medium-mlx` |
 | Tools | [Homebrew](https://brew.sh), `ffmpeg`, Python 3.11+, Xcode command line tools |
 
 ## Install
@@ -84,10 +85,10 @@ step is idempotent — re-run it any time something looks broken.
 ./scripts/install.sh --help
 
   --yes           never prompt (CI, unattended re-runs)
-  --skip-model    don't download the 3 GB weights yet
+  --skip-model    don't download the ~5 GB of weights yet
   --skip-app      backend only
   --slim          remove the unused PyTorch dependency (~2.5 GB)
-  --model REPO    use a different MLX Whisper model
+  --model REPO    use a different Parakeet or MLX Whisper model
 ```
 
 Then:
@@ -161,30 +162,24 @@ Existing files are never overwritten — `meeting.txt` becomes `meeting-1.txt`.
 
 ## Performance
 
-Measured on the machine this was built on: **MacBook Pro, Apple M3 Pro (12-core),
-36 GB, macOS 26.6**, `mlx-community/whisper-large-v3-mlx` in float16, word
-timestamps enabled.
+Measured on a **MacBook Air, Apple M4, 16 GB**, both models through MLX on the
+same audio. Word error rate uses Whisper's English text normaliser on 200 random
+LibriSpeech utterances per set.
 
-| Input | Length | Wall time | Throughput |
-|---|---|---|---|
-| `.mov` video, cold model | 27.9 s | 5.7 s | **4.9× realtime** |
-| `.m4a` audio, warm model | 25.8 s | 4.1 s | **6.3× realtime** |
-| `.m4a` audio, warm model | 4 min 43 s | 52.8 s | **5.4× realtime** |
-| `.mp4` video, warm model | 5 min 51 s | 66 s | **5.3× realtime** |
+| | Parakeet TDT 0.6B v3 (default) | whisper-large-v3 |
+|---|---|---|
+| WER, LibriSpeech test-clean | **1.65 %** | 2.82 % |
+| WER, LibriSpeech test-other (noisy, accented) | **3.55 %** | 6.72 % |
+| 10 min of a real screen recording | **19 s (31× realtime)** | several minutes |
 
-So a one-hour meeting takes roughly **11 minutes**. Notes:
+So a one-hour recording takes roughly **2 minutes**. Notes:
 
-- **First run is slower.** The weights load in ~3 s, once per backend session.
-  The app calls `POST /models/preload` as soon as it connects, so by the time you
-  drop a file they're usually already hot.
-- **Resident memory is ~2.9 GB** with `large-v3` loaded, in unified memory.
-- **Word timestamps cost roughly 15–20 %.** They buy tight subtitle timings and
-  the data future subtitle editing needs. Turn them off with
-  `WHISPER_MAC_WORD_TIMESTAMPS=0` if you only want text.
-- **Smaller models are much faster** — `whisper-medium-mlx` is roughly 2× the
-  throughput at some accuracy cost. Set `WHISPER_MAC_MODEL` to switch.
-- Video costs a few extra seconds for audio extraction, proportional to file
-  size rather than length.
+- **Auto language costs one Whisper load.** With the language on auto, Whisper
+  identifies it from the first 30 seconds (~3 s to load once per session), then
+  Parakeet transcribes. Pick a language in Options to skip that.
+- **Translation and non-European languages run on Whisper**, at Whisper speed
+  (about 5× realtime on an M3 Pro).
+- **Word timestamps come free with Parakeet**; on Whisper they cost 15–20 %.
 
 ## Configuration
 
@@ -192,13 +187,14 @@ Everything is environment-driven; the defaults are what `run.sh` uses.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WHISPER_MAC_MODEL` | `mlx-community/whisper-large-v3-mlx` | Any MLX Whisper repo id or local path |
+| `WHISPER_MAC_MODEL` | `mlx-community/parakeet-tdt-0.6b-v3` | A Parakeet or MLX Whisper repo id, or a local path |
+| `WHISPER_MAC_FALLBACK_MODEL` | `mlx-community/whisper-large-v3-mlx` | Whisper model behind Parakeet (translation, other languages, language ID). Empty disables it |
 | `WHISPER_MAC_PORT` | `8756` | Backend port |
 | `WHISPER_MAC_OUTPUT_DIR` | `output/` | Default transcript folder |
 | `WHISPER_MAC_MODEL_DIR` | `backend/models/` | Weight cache (shared, so downloads happen once) |
 | `WHISPER_MAC_TEMPERATURE` | `0.0` | Deterministic decoding |
 | `WHISPER_MAC_TEMPERATURE_FALLBACK` | `0` | Enable Whisper's retry ladder — slower, but rescues the rare repetition loop |
-| `WHISPER_MAC_WORD_TIMESTAMPS` | `1` | Word-level DTW alignment |
+| `WHISPER_MAC_WORD_TIMESTAMPS` | `1` | Word-level DTW alignment (Whisper; Parakeet always times words) |
 | `WHISPER_MAC_ESTIMATED_RTF` | `0.19` | Calibration for progress interpolation |
 | `WHISPER_MAC_MAX_UPLOAD_BYTES` | 8 GB | Cap for the multipart upload route |
 | `WHISPER_MAC_REQUIRE_TOKEN` | `1` | Session-token auth |
@@ -214,7 +210,8 @@ the MLX model.
 drop file → POST /transcribe/local (path, not bytes)
           → ffprobe          duration, stream layout
           → ffmpeg           16 kHz mono WAV, live progress
-          → mlx-whisper      Metal float16 decode, progress per 30 s window
+          → Parakeet         Metal decode, progress per 2-minute chunk
+            (or mlx-whisper  for translation / other languages, per 30 s window)
           → writers          txt / srt / vtt / json
           → GET /jobs        polled twice a second by the app
 ```
@@ -289,7 +286,9 @@ It's ad-hoc signed, not notarised, because it's built locally. Right-click ▸
 **Open** once, or `xattr -dr com.apple.quarantine build/WhisperMac.app`.
 
 **Out of memory.**
-Switch models: `WHISPER_MAC_MODEL=mlx-community/whisper-medium-mlx ./run.sh`.
+Use a smaller fallback: `WHISPER_MAC_FALLBACK_MODEL=mlx-community/whisper-medium-mlx ./run.sh`.
+Picking a Parakeet language in Options (rather than auto) also keeps Whisper out
+of memory entirely.
 
 ## Roadmap
 
@@ -310,4 +309,6 @@ MIT — see [LICENSE](LICENSE).
 
 Built on [MLX](https://github.com/ml-explore/mlx) and
 [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) by
-Apple, and [Whisper](https://github.com/openai/whisper) by OpenAI.
+Apple, [parakeet-mlx](https://github.com/senstella/parakeet-mlx),
+[Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) by NVIDIA, and
+[Whisper](https://github.com/openai/whisper) by OpenAI.

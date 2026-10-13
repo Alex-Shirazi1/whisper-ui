@@ -4,10 +4,10 @@
 #
 #   ./scripts/install.sh                 # interactive, does everything
 #   ./scripts/install.sh --yes           # never ask (CI / re-runs)
-#   ./scripts/install.sh --skip-model    # don't download 3 GB of weights yet
+#   ./scripts/install.sh --skip-model    # don't download ~5 GB of weights yet
 #   ./scripts/install.sh --skip-app      # backend only
 #   ./scripts/install.sh --slim          # drop the unused torch dependency
-#   ./scripts/install.sh --model REPO    # use a different MLX Whisper model
+#   ./scripts/install.sh --model REPO    # use a different Parakeet or MLX Whisper model
 #
 # Every step is idempotent: re-running repairs whatever is missing and leaves
 # the rest alone.
@@ -16,7 +16,11 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-MODEL="${WHISPER_MAC_MODEL:-mlx-community/whisper-large-v3-mlx}"
+MODEL="${WHISPER_MAC_MODEL:-mlx-community/parakeet-tdt-0.6b-v3}"
+# Whisper behind Parakeet: translation, other languages, language detection.
+# Set WHISPER_MAC_FALLBACK_MODEL= (empty) to skip it.
+FALLBACK_MODEL="${WHISPER_MAC_FALLBACK_MODEL-mlx-community/whisper-large-v3-mlx}"
+export WHISPER_MAC_FALLBACK_MODEL="$FALLBACK_MODEL"
 SKIP_MODEL=0
 SKIP_APP=0
 SLIM=0
@@ -58,8 +62,8 @@ ok "$(sw_vers -productName) $(sw_vers -productVersion) on $(uname -m)"
 
 MEMORY_GB=$(($(sysctl -n hw.memsize) / 1024 / 1024 / 1024))
 info "Memory: ${MEMORY_GB} GB"
-if [[ "$MODEL" == *large* && "$MEMORY_GB" -lt 12 ]]; then
-  warn "whisper-large-v3 wants ~10 GB free. Consider --model mlx-community/whisper-medium-mlx."
+if [[ "$MODEL $FALLBACK_MODEL" == *whisper-large* && "$MEMORY_GB" -lt 12 ]]; then
+  warn "whisper-large-v3 wants ~10 GB free. Consider WHISPER_MAC_FALLBACK_MODEL=mlx-community/whisper-medium-mlx."
 fi
 
 # ---------------------------------------------------------------- 2. homebrew
@@ -101,8 +105,9 @@ ASSUME_YES="$ASSUME_YES" "$REPO_ROOT/scripts/setup_python.sh" "${SETUP_ARGS[@]}"
 
 # ------------------------------------------------------------------- 5. model
 
-step "Checking the Whisper model"
+step "Checking the speech models"
 info "Model: $MODEL"
+[[ -n "$FALLBACK_MODEL" ]] && info "Fallback: $FALLBACK_MODEL"
 MODEL_DIR="$REPO_ROOT/backend/models"
 mkdir -p "$MODEL_DIR"
 
@@ -113,10 +118,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backend.config import get_settings
-from backend.transcriber import model_is_local
+from backend.transcriber import MLXEngine
 
-get_settings().apply_model_cache_env()
-raise SystemExit(0 if model_is_local(sys.argv[1]) else 1)
+settings = get_settings()
+settings.apply_model_cache_env()
+engine = MLXEngine(settings.fallback_model)
+raise SystemExit(0 if engine.model_is_local(sys.argv[1]) else 1)
 PY
 }
 
@@ -126,7 +133,7 @@ if model_cached; then
 elif [[ "$SKIP_MODEL" == "1" ]]; then
   warn "Skipping the download. It will happen automatically on your first file."
 else
-  info "This is a one-time download of roughly 3 GB into backend/models."
+  info "This is a one-time download of roughly 5 GB into backend/models."
   if confirm "Download it now?"; then
     WHISPER_MAC_MODEL_DIR="$MODEL_DIR" "$VENV_PY" - "$MODEL" <<'PY'
 import sys
@@ -134,11 +141,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backend.config import get_settings
-from backend.transcriber import ensure_model
+from backend.transcriber import MLXEngine
 
-get_settings().apply_model_cache_env()
-ensure_model(sys.argv[1])
-print("Model ready.")
+settings = get_settings()
+settings.apply_model_cache_env()
+MLXEngine(settings.fallback_model).ensure_model(sys.argv[1])
+print("Models ready.")
 PY
     ok "Weights downloaded"
   else
@@ -170,12 +178,14 @@ import os
 from backend import media
 from backend.config import get_settings
 from backend.formats import build_transcript, write_outputs
-from backend.transcriber import TranscribeOptions, transcribe
+from backend.transcriber import MLXEngine, TranscribeOptions
 
 settings = get_settings()
 settings.apply_model_cache_env()
 samples = media.load_pcm16_wav(Path(os.environ["SMOKE_WAV"]))
-result = transcribe(samples, TranscribeOptions.from_settings(settings, language="en"))
+result = MLXEngine(settings.fallback_model).transcribe(
+    samples, TranscribeOptions.from_settings(settings, language="en")
+)
 transcript = build_transcript(
     source_name="sample.wav", raw=result.raw, model=result.model,
     duration=media.audio_duration(samples),

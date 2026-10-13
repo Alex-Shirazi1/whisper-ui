@@ -121,7 +121,7 @@ final class AppModel: ObservableObject {
     }
 
     var modelLabel: String {
-        let name = health?.model ?? "whisper-large-v3"
+        let name = health?.model ?? "parakeet-tdt-0.6b-v3"
         return name.split(separator: "/").last.map(String.init) ?? name
     }
 

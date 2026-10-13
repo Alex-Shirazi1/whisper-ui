@@ -64,7 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Must happen before mlx-whisper imports huggingface_hub.
     settings.apply_model_cache_env()
 
-    app.state.engine = getattr(app.state, "engine", None) or transcriber.MLXEngine()
+    app.state.engine = getattr(app.state, "engine", None) or transcriber.MLXEngine(
+        settings.fallback_model
+    )
     app.state.jobs = JobStore(settings, engine=app.state.engine)
     app.state.preloading = threading.Event()
     app.state.preload_error = None

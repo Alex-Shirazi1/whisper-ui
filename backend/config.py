@@ -21,7 +21,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_ROOT = Path(__file__).resolve().parent
 
-DEFAULT_MODEL = "mlx-community/whisper-large-v3-mlx"
+#: NVIDIA Parakeet TDT v3: the fast, accurate default for English and 24 other
+#: European languages (see backend/parakeet.py).
+DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+#: Whisper, for what Parakeet cannot do: translation, other languages, and
+#: identifying the language when it is left on auto.
+DEFAULT_FALLBACK_MODEL = "mlx-community/whisper-large-v3-mlx"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8756
 
@@ -105,6 +110,9 @@ class Settings:
 
     # --- model / decoding ---
     model: str = DEFAULT_MODEL
+    #: Used when ``model`` is Parakeet and the job needs Whisper. Empty disables
+    #: it: auto-detect then assumes a Parakeet language and translation fails.
+    fallback_model: str = DEFAULT_FALLBACK_MODEL
     #: 0.0 is deterministic and what the CLI docs recommend for accuracy.
     temperature: float = 0.0
     #: When true, fall back up the temperature ladder on a failed window. Costs
@@ -125,6 +133,7 @@ class Settings:
     #: Fraction of realtime the model needs, used to interpolate progress between
     #: decode windows. Measured at ~0.19 for whisper-large-v3 on an M3 with word
     #: timestamps on (≈5.4× realtime); lower it for a smaller model or a faster chip.
+    #: Parakeet outruns the estimate, so its own per-chunk reports drive the bar.
     estimated_realtime_factor: float = 0.19
     max_upload_bytes: int = 8 * _GIB
     #: Finished jobs are kept this long so the UI can still read results.
@@ -150,6 +159,9 @@ class Settings:
             temp_dir=_env_path("WHISPER_MAC_TEMP_DIR", defaults.temp_dir),
             log_dir=_env_path("WHISPER_MAC_LOG_DIR", defaults.log_dir),
             model=_env_str("WHISPER_MAC_MODEL", defaults.model),
+            fallback_model=os.environ.get(
+                "WHISPER_MAC_FALLBACK_MODEL", defaults.fallback_model
+            ).strip(),
             temperature=_env_float("WHISPER_MAC_TEMPERATURE", defaults.temperature),
             temperature_fallback=_env_bool(
                 "WHISPER_MAC_TEMPERATURE_FALLBACK", defaults.temperature_fallback

@@ -30,7 +30,7 @@ No auth. Used by `run.sh`, the app's status pill, and the offline banner.
 {
   "status": "ok",
   "version": "1.0.0",
-  "model": "mlx-community/whisper-large-v3-mlx",
+  "model": "mlx-community/parakeet-tdt-0.6b-v3",
   "engine": {
     "available": true,
     "device": "Device(gpu, 0)",
@@ -84,10 +84,10 @@ curl -X POST http://127.0.0.1:8756/transcribe/local \
 | `path` | required | Absolute path; `~` is expanded |
 | `formats` | `["txt"]` | Any of `txt`, `srt`, `vtt`, `json` |
 | `output_dir` | backend default | Created if missing |
-| `model` | configured model | Any MLX Whisper repo id |
+| `model` | configured model | A Parakeet or MLX Whisper repo id |
 | `language` | `null` | ISO code, or `null`/`"auto"` to detect |
-| `task` | `"transcribe"` | Or `"translate"` (to English) |
-| `initial_prompt` | `null` | Bias vocabulary, names, jargon |
+| `task` | `"transcribe"` | Or `"translate"` (to English; runs on the Whisper fallback) |
+| `initial_prompt` | `null` | Bias vocabulary, names, jargon (Whisper only; Parakeet ignores it) |
 | `overwrite` | `false` | When false, `name.txt` → `name-1.txt` |
 
 Returns `202` with a job. Errors: `404` (no such file), `400` (not a file /
@@ -122,7 +122,7 @@ mid-stream, without buffering the whole body.
   "source_path": "/Users/me/Movies/long_meeting.m4a",
   "output_dir": "/Users/me/Desktop/whisper-mac/output",
   "formats": ["txt", "srt"],
-  "model": "mlx-community/whisper-large-v3-mlx",
+  "model": "mlx-community/parakeet-tdt-0.6b-v3",
   "task": "transcribe",
   "outputs": [],
   "error": null,
@@ -160,7 +160,7 @@ Full transcript for the in-app viewer. `409` if the job hasn't produced one yet.
   "source": "long_meeting.m4a",
   "language": "en",
   "duration": 283.3,
-  "model": "mlx-community/whisper-large-v3-mlx",
+  "model": "mlx-community/parakeet-tdt-0.6b-v3",
   "task": "transcribe",
   "word_count": 803,
   "text": "Good morning everyone…",
